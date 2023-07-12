@@ -1,237 +1,176 @@
-
-# Bringing in tensorflow
-import tensorflow as tf
-gpus = tf.config.experimental.list_physical_devices('GPU')
-for gpu in gpus: 
-    tf.config.experimental.set_memory_growth(gpu, True)
-# Brining in tensorflow datasets for fashion mnist 
-import tensorflow_datasets as tfds
-# Bringing in matplotlib for viz stuff
-from matplotlib import pyplot as plt
-# Use the tensorflow datasets api to bring in the data source
-ds = tfds.load('fashion_mnist', split='train')
-ds.as_numpy_iterator().next()['label']
-
-# Do some data transformation
-import numpy as np
-# Setup connection aka iterator
-dataiterator = ds.as_numpy_iterator()
-# Getting data out of the pipeline
-dataiterator.next()['image']
-# Setup the subplot formatting 
-fig, ax = plt.subplots(ncols=4, figsize=(20,20))
-# Loop four times and get images 
-for idx in range(4): 
-    # Grab an image and label
-    sample = dataiterator.next()
-    # Plot the image using a specific subplot 
-    ax[idx].imshow(np.squeeze(sample['image']))
-    # Appending the image label as the plot title 
-    ax[idx].title.set_text(sample['label'])
-
-# Scale and return images only 
-def scale_images(data): 
-    image = data['image']
-    return image / 255
-# Reload the dataset 
-ds = tfds.load('fashion_mnist', split='train')
-# Running the dataset through the scale_images preprocessing step
-ds = ds.map(scale_images) 
-# Cache the dataset for that batch 
-ds = ds.cache()
-# Shuffle it up 
-ds = ds.shuffle(60000)
-# Batch into 128 images per sample
-ds = ds.batch(128)
-# Reduces the likelihood of bottlenecking 
-ds = ds.prefetch(64)
-ds.as_numpy_iterator().next().shape
-(128, 28, 28, 1)
-
-# Bring in the sequential api for the generator and discriminator
-from tensorflow.keras.models import Sequential
-# Bring in the layers for the neural network
-from tensorflow.keras.layers import Conv2D, Dense, Flatten, Reshape, LeakyReLU, Dropout, UpSampling2D
-
-def build_generator(): 
-    model = Sequential()
-    
-    # Takes in random values and reshapes it to 7x7x128
-    # Beginnings of a generated image
-    model.add(Dense(7*7*128, input_dim=128))
-    model.add(LeakyReLU(0.2))
-    model.add(Reshape((7,7,128)))
-    
-    # Upsampling block 1 
-    model.add(UpSampling2D())
-    model.add(Conv2D(128, 5, padding='same'))
-    model.add(LeakyReLU(0.2))
-    
-    # Upsampling block 2 
-    model.add(UpSampling2D())
-    model.add(Conv2D(128, 5, padding='same'))
-    model.add(LeakyReLU(0.2))
-    
-    # Convolutional block 1
-    model.add(Conv2D(128, 4, padding='same'))
-    model.add(LeakyReLU(0.2))
-    
-    # Convolutional block 2
-    model.add(Conv2D(128, 4, padding='same'))
-    model.add(LeakyReLU(0.2))
-    
-    # Conv layer to get to one channel
-    model.add(Conv2D(1, 4, padding='same', activation='sigmoid'))
-    
-    return model
-generator = build_generator()
-generator.summary()
-
-img = generator.predict(np.random.randn(4,128,1))
-# Generate new fashion
-img = generator.predict(np.random.randn(4,128,1))
-# Setup the subplot formatting 
-fig, ax = plt.subplots(ncols=4, figsize=(20,20))
-# Loop four times and get images 
-for idx, img in enumerate(img): 
-    # Plot the image using a specific subplot 
-    ax[idx].imshow(np.squeeze(img))
-    # Appending the image label as the plot title 
-    ax[idx].title.set_text(idx)
-
-def build_discriminator(): 
-    model = Sequential()
-    
-    # First Conv Block
-    model.add(Conv2D(32, 5, input_shape = (28,28,1)))
-    model.add(LeakyReLU(0.2))
-    model.add(Dropout(0.4))
-    
-    # Second Conv Block
-    model.add(Conv2D(64, 5))
-    model.add(LeakyReLU(0.2))
-    model.add(Dropout(0.4))
-    
-    # Third Conv Block
-    model.add(Conv2D(128, 5))
-    model.add(LeakyReLU(0.2))
-    model.add(Dropout(0.4))
-    
-    # Fourth Conv Block
-    model.add(Conv2D(256, 5))
-    model.add(LeakyReLU(0.2))
-    model.add(Dropout(0.4))
-    
-    # Flatten then pass to dense layer
-    model.add(Flatten())
-    model.add(Dropout(0.4))
-    model.add(Dense(1, activation='sigmoid'))
-    
-    return model 
-discriminator = build_discriminator()
-discriminator.summary()
-
-img = img[0]
-img.shape
-(28, 28, 1)
-discriminator.predict(img)
-array([[0.50057805],
-       [0.5006448 ],
-       [0.50065   ],
-       [0.5005127 ]], dtype=float32)
-
-from tensorflow.keras.optimizers import Adam
-# Binary cross entropy is going to be the loss for both 
-from tensorflow.keras.losses import BinaryCrossentropy
-g_opt = Adam(learning_rate=0.0001) 
-d_opt = Adam(learning_rate=0.00001) 
-g_loss = BinaryCrossentropy()
-d_loss = BinaryCrossentropy()
-
-# Importing the base model class to subclass our training step 
-from tensorflow.keras.models import Model
-class FashionGAN(Model): 
-    def __init__(self, generator, discriminator, *args, **kwargs):
-        # Pass through args and kwargs to base class 
-        super().__init__(*args, **kwargs)
-        
-        # Create attributes for gen and disc
-        self.generator = generator 
-        self.discriminator = discriminator 
-        
-    def compile(self, g_opt, d_opt, g_loss, d_loss, *args, **kwargs): 
-        # Compile with base class
-        super().compile(*args, **kwargs)
-        
-        # Create attributes for losses and optimizers
-        self.g_opt = g_opt
-        self.d_opt = d_opt
-        self.g_loss = g_loss
-        self.d_loss = d_loss 
-
-    def train_step(self, batch):
-        # Get the data 
-        real_images = batch
-        fake_images = self.generator(tf.random.normal((128, 128, 1)), training=False)
-        
-        # Train the discriminator
-        with tf.GradientTape() as d_tape: 
-            # Pass the real and fake images to the discriminator model
-            yhat_real = self.discriminator(real_images, training=True) 
-            yhat_fake = self.discriminator(fake_images, training=True)
-            yhat_realfake = tf.concat([yhat_real, yhat_fake], axis=0)
-            
-            # Create labels for real and fakes images
-            y_realfake = tf.concat([tf.zeros_like(yhat_real), tf.ones_like(yhat_fake)], axis=0)
-            
-            # Add some noise to the TRUE outputs
-            noise_real = 0.15*tf.random.uniform(tf.shape(yhat_real))
-            noise_fake = -0.15*tf.random.uniform(tf.shape(yhat_fake))
-            y_realfake += tf.concat([noise_real, noise_fake], axis=0)
-            
-            # Calculate loss - BINARYCROSS 
-            total_d_loss = self.d_loss(y_realfake, yhat_realfake)
-            
-        # Apply backpropagation - nn learn 
-        dgrad = d_tape.gradient(total_d_loss, self.discriminator.trainable_variables) 
-        self.d_opt.apply_gradients(zip(dgrad, self.discriminator.trainable_variables))
-        
-        # Train the generator 
-        with tf.GradientTape() as g_tape: 
-            # Generate some new images
-            gen_images = self.generator(tf.random.normal((128,128,1)), training=True)
-                                        
-            # Create the predicted labels
-            predicted_labels = self.discriminator(gen_images, training=False)
-                                        
-            # Calculate loss - trick to training to fake out the discriminator
-            total_g_loss = self.g_loss(tf.zeros_like(predicted_labels), predicted_labels) 
-            
-        # Apply backprop
-        ggrad = g_tape.gradient(total_g_loss, self.generator.trainable_variables)
-        self.g_opt.apply_gradients(zip(ggrad, self.generator.trainable_variables))
-        
-        return {"d_loss":total_d_loss, "g_loss":total_g_loss}
-# Create instance of subclassed model
-fashgan = FashionGAN(generator, discriminator)
-# Compile the model
-fashgan.compile(g_opt, d_opt, g_loss, d_loss)
-
 import os
-from tensorflow.keras.preprocessing.image import array_to_img
-from tensorflow.keras.callbacks import Callback
-class ModelMonitor(Callback):
-    def __init__(self, num_img=3, latent_dim=128):
-        self.num_img = num_img
-        self.latent_dim = latent_dim
+import pandas as pd
+from keras.preprocessing.image import ImageDataGenerator
+from keras.layers import Dense, Reshape, Flatten, Conv2D, Conv2DTranspose, LeakyReLU, Dropout, ZeroPadding2D, Input, Add
+from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
+from keras.models import Sequential, Model
+from keras.optimizers import Adam
+import numpy as np
+import matplotlib.pyplot as plt
+from keras.layers import Activation
 
-    def on_epoch_end(self, epoch, logs=None):
-        random_latent_vectors = tf.random.uniform((self.num_img, self.latent_dim,1))
-        generated_images = self.model.generator(random_latent_vectors)
-        generated_images *= 255
-        generated_images.numpy()
-        for i in range(self.num_img):
-            img = array_to_img(generated_images[i])
-            img.save(os.path.join('images', f'generated_img_{epoch}_{i}.png'))
 
-hist = fashgan.fit(ds, epochs=20, callbacks=[ModelMonitor()])
+# Specify the path to the folder containing the images in Google Drive
+folder_path = '/content/drive/MyDrive/angioml/imageAngio.zip (Unzipped Files)'
+image_dimensions = (128, 128) 
+
+image_files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+
+df = pd.DataFrame({
+    'filename': image_files,
+    'class': ['angiography' for _ in image_files] 
+})
+
+datagen = ImageDataGenerator(preprocessing_function=lambda x: (x/127.5)-1) 
+
+data = datagen.flow_from_dataframe(df,
+                                   folder_path,
+                                   x_col='filename',
+                                   y_col='class',
+                                   target_size=image_dimensions,
+                                   color_mode='grayscale',
+                                   class_mode=None,
+                                   batch_size=128)
+
+noise_dim = 100
+
+def build_generator():
+    model = Sequential()
+
+    model.add(Dense(128*32*32, activation="relu", input_dim=noise_dim))
+    model.add(Reshape((32, 32, 128)))
+
+    model.add(Conv2DTranspose(128, kernel_size=3, strides=2, padding='same', use_bias=False))
+    model.add(InstanceNormalization())
+    model.add(Activation("relu"))
+    skip1 = model.output  
+
+    model.add(Conv2DTranspose(64, kernel_size=3, strides=2, padding='same', use_bias=False))
+    model.add(InstanceNormalization())
+    model.add(Activation("relu"))
+    skip2 = model.output 
+
+    model.add(Conv2D(1, kernel_size=3, padding="same"))
+    model.add(Activation("tanh"))
+
+    noise = Input(shape=(noise_dim,))
+    img = model(noise)
+    return Model(noise, img)
+
+def build_discriminator():
+    model = Sequential()
+
+    model.add(Conv2D(32, kernel_size=3, strides=2, input_shape=(128,128,1), padding="same"))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
+    model.add(ZeroPadding2D(padding=((0,1),(0,1))))
+    model.add(InstanceNormalization())
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(128, kernel_size=3, strides=2, padding="same"))
+    model.add(InstanceNormalization())
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dropout(0.25))
+
+    model.add(Conv2D(256, kernel_size=3, strides=1, padding="same"))
+    model.add(InstanceNormalization())
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dropout(0.25))
+
+    model.add(Flatten())
+    model.add(Dense(1, activation='sigmoid'))
+
+    img = Input(shape=(128,128,1))
+    validity = model(img)
+    return Model(img, validity)
+
+
+
+def train(data, epochs, batch_size=128, save_interval=50):
+    # Build and compile the discriminator
+    discriminator = build_discriminator()
+    discriminator.compile(loss='binary_crossentropy',
+                          optimizer=Adam(0.0002, 0.5),
+                          metrics=['accuracy'])
+
+    # Build the generator
+    generator = build_generator()
+
+    # The generator takes noise as input and generates imgs
+    z = Input(shape=(noise_dim,))
+    img = generator(z)
+
+    # For the combined model we will only train the generator
+    discriminator.trainable = False
+
+    # The discriminator takes generated images as input and determines validity
+    validity = discriminator(img)
+
+    # The combined model (stacked generator and discriminator)
+    # Trains the generator to fool the discriminator
+    combined = Model(z, validity)
+    combined.compile(loss='binary_crossentropy', optimizer=Adam(0.0002, 0.5))
+
+    for epoch in range(epochs):
+        # Display the progress of the training
+        print(f"Current epoch: {epoch+1}/{epochs}")
+
+        # ---------------------
+        #  Train Discriminator
+        # ---------------------
+        imgs = data.next()  # Use .next() to get the next batch of images
+
+        if imgs.shape[0] != batch_size:
+            continue
+
+        noise = np.random.normal(0, 1, (batch_size, noise_dim))
+
+        # Generate a half batch of new images
+        gen_imgs = generator.predict(noise)
+
+        # Train the discriminator
+        d_loss_real = discriminator.train_on_batch(imgs, np.ones((batch_size, 1)))
+        d_loss_fake = discriminator.train_on_batch(gen_imgs, np.zeros((batch_size, 1)))
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        # ---------------------
+        #  Train Generator
+        # ---------------------
+
+        noise = np.random.normal(0, 1, (batch_size, noise_dim))
+
+        # Train the generator (to have the discriminator label samples as valid)
+        g_loss = combined.train_on_batch(noise, np.ones((batch_size, 1)))
+
+        # If at save interval => save generated image samples and print the progress
+        if epoch % save_interval == 0:
+            print ("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss))
+            save_imgs(generator, epoch)
+
+
+
+
+def save_imgs(generator, epoch):
+    r, c = 5, 5
+    noise = np.random.normal(0, 1, (r * c, noise_dim))
+    gen_imgs = generator.predict(noise)
+
+    # Rescale images 0 - 1
+    gen_imgs = 0.5 * gen_imgs + 0.5
+
+    fig, axs = plt.subplots(r, c)
+    cnt = 0
+    for i in range(r):
+        for j in range(c):
+            axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
+            axs[i,j].axis('off')
+            cnt += 1
+    fig.savefig("images/angio_%d.png" % epoch)
+    plt.close()
+# Set your number of epochs and batch size here
+# Set your number of epochs and batch size here
+train(data, epochs=10000, batch_size=128, save_interval=100)
+
